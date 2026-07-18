@@ -11,9 +11,11 @@ st.set_page_config(page_title="Reddit Thread Finder", page_icon="🔍", layout="
 st.title("🔍 Reddit Topic Thread Finder & Exporter")
 st.markdown("Search intersecting Reddit discussions and export the results to CSV. *(Data is fetched live and not stored).*")
 
-# Securely pull User-Agent from HF Space Secrets, with a safe fallback
-USER_AGENT = os.getenv("REDDIT_USER_AGENT", "linux:reddit-topic-finder:v1.0 (by u/YourUsername)")
-
+# Check Streamlit secrets first, then OS env vars, then fallback
+if "REDDIT_USER_AGENT" in st.secrets:
+    USER_AGENT = st.secrets["REDDIT_USER_AGENT"]
+else:
+    USER_AGENT = os.getenv("REDDIT_USER_AGENT", "linux:reddit-topic-finder:v1.0 (by u/karachiwala)")
 # --- Sidebar for Inputs ---
 with st.sidebar:
     st.header("Search Parameters")
