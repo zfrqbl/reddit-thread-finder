@@ -1,21 +1,36 @@
-import os
-import requests
 import streamlit as st
 import csv
 import io
+import time
+import praw
+from praw.exceptions import RedditAPIException
 from datetime import datetime, timezone
 
 # Page configuration
 st.set_page_config(page_title="Reddit Thread Finder", page_icon="🔍", layout="wide")
 
 st.title("🔍 Reddit Topic Thread Finder & Exporter")
-st.markdown("Search intersecting Reddit discussions and export the results to CSV. *(Data is fetched live and not stored).*")
+st.markdown("Search intersecting Reddit discussions and export the results to CSV. *(Data is fetched live, filtered for safety, and not stored).*")
 
-# Check Streamlit secrets first, then OS env vars, then fallback
-if "REDDIT_USER_AGENT" in st.secrets:
-    USER_AGENT = st.secrets["REDDIT_USER_AGENT"]
-else:
-    USER_AGENT = os.getenv("REDDIT_USER_AGENT", "linux:reddit-topic-finder:v1.0 (by u/karachiwala)")
+# --- Initialize PRAW (Reddit API Wrapper) ---
+@st.cache_resource
+def get_reddit_client():
+    client_id = st.secrets.get("REDDIT_CLIENT_ID", "")
+    client_secret = st.secrets.get("REDDIT_CLIENT_SECRET", "")
+    user_agent = st.secrets.get("REDDIT_USER_AGENT", "linux:reddit-thread-finder:v1.0")
+    
+    if not client_id or not client_secret:
+        st.error("⚠️ Reddit API credentials missing in Streamlit Secrets. Please add REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET.")
+        st.stop()
+        
+    return praw.Reddit(
+        client_id=client_id,
+        client_secret=client_secret,
+        user_agent=user_agent
+    )
+
+reddit = get_reddit_client()
+
 # --- Sidebar for Inputs ---
 with st.sidebar:
     st.header("Search Parameters")
@@ -27,10 +42,15 @@ with st.sidebar:
     sec_topic3 = st.text_input("Secondary Topic 3 (Optional)", placeholder="e.g., Open Source")
     
     target_subreddit = st.text_input("Restrict to Subreddit (Optional)", placeholder="e.g., MachineLearning")
+    
+    # SAFEGUARD 1: NSFW Filtering (Default OFF for safety and compliance)
+    include_nsfw = st.checkbox("Include NSFW results", value=False, help="Keep this off to ensure safe-for-work results.")
     include_comments = st.checkbox("Include Top 3 Comments (Slower)", value=False)
     
     sort_by = st.selectbox("Sort By", ["relevance", "top", "new", "comments"], index=0)
     time_filter = st.selectbox("Time Range", ["all", "year", "month", "week", "day"], index=1)
+    
+    # SAFEGUARD 2: Hard cap on results to prevent massive API payloads
     limit = st.slider("Max Results", min_value=5, max_value=25, value=10, step=5)
     
     search_btn = st.button("🔍 Search & Generate CSV", type="primary", use_container_width=True)
@@ -40,7 +60,15 @@ if search_btn or 'search_results' in st.session_state:
     if not main_topic or not main_topic.strip():
         st.warning("⚠️ Please enter at least a main topic.")
     else:
-        with st.spinner("Searching Reddit..."):
+        # SAFEGUARD 3: User Session Cooldown (Prevent button spamming)
+        current_time = time.time()
+        if 'last_search_time' in st.session_state:
+            time_since_last_search = current_time - st.session_state['last_search_time']
+            if time_since_last_search < 3.0: # 3-second cooldown
+                st.warning("⏳ Please wait a few seconds before searching again to protect the API.")
+                st.stop()
+        
+        with st.spinner("Searching Reddit via official API..."):
             # Build boolean query
             q = f'"{main_topic.strip()}"'
             secondary_topics = [t.strip() for t in [sec_topic1, sec_topic2, sec_topic3] if t and t.strip()]
@@ -48,95 +76,91 @@ if search_btn or 'search_results' in st.session_state:
                 parts = [f'"{t}"' for t in secondary_topics]
                 q += f' AND ({" OR ".join(parts)})'
             
-            # Subreddit scoping
-            if target_subreddit and target_subreddit.strip():
-                clean_sub = target_subreddit.strip().replace('r/', '')
-                q = f"subreddit:{clean_sub} {q}"
-
-            url = "https://www.reddit.com/search.json"
-            headers = {"User-Agent": USER_AGENT}
-            
-            # Safety cap for comments
-            safe_limit = 10 if include_comments else limit
-            
-            params = {
-                "q": q,
-                "sort": sort_by,
-                "limit": safe_limit,
-                "type": "link",
-                "t": time_filter
-            }
-            
             try:
-                response = requests.get(url, headers=headers, params=params, timeout=10)
+                # Determine which subreddit to search
+                if target_subreddit and target_subreddit.strip():
+                    clean_sub = target_subreddit.strip().replace('r/', '')
+                    subreddit_obj = reddit.subreddit(clean_sub)
+                else:
+                    subreddit_obj = reddit.subreddit('all')
                 
-                if response.status_code == 429:
-                    st.error("⏳ Reddit is rate-limiting us. Please wait a minute and try again.")
-                    st.stop()
-                    
-                response.raise_for_status()
-                data = response.json()
-                
-                children = data.get("data", {}).get("children", [])
-                if not children:
-                    st.info("🔍 No results found. Try broadening your topics or changing the time range.")
-                    st.stop()
+                # Execute search
+                results = subreddit_obj.search(
+                    query=q,
+                    sort=sort_by,
+                    time_filter=time_filter,
+                    limit=limit
+                )
                 
                 markdown_results = []
                 csv_rows = []
+                found_any = False
                 
-                for child in children:
-                    post = child["data"]
-                    created_date = datetime.fromtimestamp(post["created_utc"], tz=timezone.utc).strftime('%Y-%m-%d')
-                    post_url = f"https://www.reddit.com{post['permalink']}"
+                for post in results:
+                    # SAFEGUARD 1 (Applied): Skip NSFW posts if the user didn't explicitly opt-in
+                    if post.over_18 and not include_nsfw:
+                        continue
+                        
+                    found_any = True
+                    created_date = datetime.fromtimestamp(post.created_utc, tz=timezone.utc).strftime('%Y-%m-%d')
                     
                     comments_text = "N/A"
                     if include_comments:
                         try:
-                            comment_url = f"https://www.reddit.com{post['permalink']}.json?limit=3&sort=top"
-                            comment_resp = requests.get(comment_url, headers=headers, timeout=5)
-                            if comment_resp.status_code == 200:
-                                comment_data = comment_resp.json()
-                                if len(comment_data) > 1:
-                                    comment_children = comment_data[1].get("data", {}).get("children", [])
-                                    top_comments = []
-                                    for c in comment_children:
-                                        c_data = c.get("data", {})
-                                        body = c_data.get("body", "")
-                                        author = c_data.get("author", "[deleted]")
-                                        if body and body not in ["[removed]", "[deleted]"]:
-                                            top_comments.append(f"{author}: {body[:150]}...")
-                                        if len(top_comments) >= 3:
-                                            break
-                                    comments_text = " | ".join(top_comments) if top_comments else "No top comments found."
+                            # Fetch comments efficiently (limit=0 prevents fetching deep nested trees, saving API calls)
+                            post.comments.replace_more(limit=0)
+                            top_comments = sorted(post.comments, key=lambda c: c.score, reverse=True)[:3]
+                            comment_strs = []
+                            for c in top_comments:
+                                author = c.author.name if c.author else "[deleted]"
+                                body = c.body.replace('\n', ' ').replace('\r', ' ')[:150]
+                                if body and body not in ["[removed]", "[deleted]"]:
+                                    comment_strs.append(f"{author}: {body}...")
+                            comments_text = " | ".join(comment_strs) if comment_strs else "No top comments found."
                         except Exception:
                             comments_text = "Failed to load comments."
 
-                    md_post = f"### [{post['title']}]({post['url']})\n"
-                    md_post += f"- **r/{post['subreddit']}** | ⬆️ {post['score']} | 💬 {post['num_comments']} | 📅 {created_date}\n"
-                    md_post += f"- [View on Reddit]({post_url})\n"
+                    md_post = f"### [{post.title}]({post.url})\n"
+                    md_post += f"- **r/{post.subreddit}** | ⬆️ {post.score} | 💬 {post.num_comments} | 📅 {created_date}\n"
+                    md_post += f"- [View on Reddit](https://www.reddit.com{post.permalink})\n"
                     if include_comments and comments_text != "N/A":
                         md_post += f"- **Top Comments:** {comments_text}\n"
                     md_post += "---"
                     markdown_results.append(md_post)
                     
                     csv_rows.append({
-                        "Title": post["title"],
-                        "Subreddit": f"r/{post['subreddit']}",
-                        "Score": post["score"],
-                        "Total Comments": post["num_comments"],
+                        "Title": post.title,
+                        "Subreddit": f"r/{post.subreddit}",
+                        "Score": post.score,
+                        "Total Comments": post.num_comments,
                         "Date": created_date,
-                        "URL": post_url,
+                        "URL": f"https://www.reddit.com{post.permalink}",
                         "Top 3 Comments (Preview)": comments_text,
-                        "Selftext": post.get("selftext", "")[:500]
+                        "Selftext": post.selftext[:500] if post.selftext else ""
                     })
                 
-                # Save to Streamlit session state (persists across reruns)
+                if not found_any:
+                    st.info("🔍 No results found. Try broadening your topics, changing the time range, or enabling NSFW results if applicable.")
+                    st.stop()
+                
+                # Save to Streamlit session state and update cooldown
                 st.session_state['search_results'] = "\n\n".join(markdown_results)
                 st.session_state['csv_data'] = csv_rows
+                st.session_state['last_search_time'] = time.time()
+                
+            # SAFEGUARD 4: Graceful API Exception Handling
+            except RedditAPIException as e:
+                error_msg = str(e)
+                if "RATELIMIT" in error_msg:
+                    st.error("⏳ Reddit's API rate limit has been reached. Please wait a minute before trying again.")
+                elif "UNAVAILABLE" in error_msg or "SERVICE" in error_msg:
+                    st.error("🔧 Reddit's API is temporarily unavailable. Please try again later.")
+                else:
+                    st.error(f"❌ Reddit API Error: {error_msg}")
+                st.stop()
                 
             except Exception as e:
-                st.error(f"❌ Error fetching data: {str(e)}.")
+                st.error(f"❌ Unexpected error fetching data: {str(e)}. Check your Reddit API credentials in Secrets.")
                 st.stop()
 
 # --- Display Results ---
@@ -148,7 +172,6 @@ if 'search_results' in st.session_state:
     st.markdown("### 📥 Download Data")
     
     if 'csv_data' in st.session_state:
-        # Generate CSV entirely in memory (no temporary files needed!)
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=st.session_state['csv_data'][0].keys())
         writer.writeheader()
