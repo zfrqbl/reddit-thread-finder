@@ -291,18 +291,38 @@ if "search_results" in st.session_state:
         )
 
 # ============================================================
-# Improvement #13: Attribution Footer
+# Attribution Footer with Full Component Credits
 # ============================================================
 st.markdown("---")
 st.markdown(
     """
-    <div style="text-align: center; color: #888; font-size: 0.85rem; padding: 1rem 0;">
-        Built with ❤️ by <strong>Zafar Iqbal</strong>
-        (<a href="https://github.com/zfrqbl" target="_blank">@zfrqbl</a>)
-        &nbsp;•&nbsp;
-        Powered by <a href="https://streamlit.io" target="_blank">Streamlit</a>
-        &nbsp;•&nbsp;
-        Data via <a href="https://pullpush.io" target="_blank">PullPush API</a>
+    <div style="
+        text-align: center; 
+        color: #888; 
+        font-size: 0.85rem; 
+        padding: 1.5rem 0;
+        border-top: 1px solid #2a2e35;
+        margin-top: 2rem;
+    ">
+        <div style="margin-bottom: 0.5rem;">
+            <strong>Built with ❤️ by Zafar Iqbal</strong>
+            (<a href="https://github.com/zfrqbl" target="_blank" style="color: #ff4b4b;">@zfrqbl</a>)
+        </div>
+        <div style="margin-bottom: 0.5rem;">
+            🛠️ Built with <a href="https://streamlit.io" target="_blank" style="color: #ff4b4b;">Streamlit</a>
+            &nbsp;•&nbsp;
+            🐍 Powered by <a href="https://python.org" target="_blank" style="color: #ff4b4b;">Python</a>
+            &nbsp;•&nbsp;
+            🔌 HTTP via <a href="https://requests.readthedocs.io" target="_blank" style="color: #ff4b4b;">requests</a>
+        </div>
+        <div>
+            📊 Data sourced from <a href="https://pullpush.io" target="_blank" style="color: #ff4b4b;">PullPush API</a>
+            &nbsp;•&nbsp;
+            🌐 Hosted on <a href="https://share.streamlit.io" target="_blank" style="color: #ff4b4b;">Streamlit Community Cloud</a>
+        </div>
+        <div style="margin-top: 0.75rem; font-size: 0.75rem; color: #666;">
+            Open source & FOSS • No data stored • Privacy-first
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
