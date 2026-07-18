@@ -19,8 +19,7 @@ st.set_page_config(page_title="Reddit Thread Finder", page_icon="🔍", layout="
 st.title("🔍 Reddit Topic Thread Finder & Exporter")
 st.markdown(
     "Search Reddit discussions and export the results to CSV, JSON, or Markdown. "
-    "Powered by [PullPush](https://pullpush.io) and [Streamlit](https://streamlit.io). "
-    "Built by [Zafar Iqbal](https://github.com/zfrqbl) (zfrqbl)."
+    
 )
 
 # ============================================================
